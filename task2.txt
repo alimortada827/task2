@@ -1,0 +1,202 @@
+pip install Flask Flask-SQLAlchemy Flask-Login Flask-Bcrypt Flask-WTF
+
+
+import os
+
+class Config:
+    SECRET_KEY = os.urandom(24)
+    SQLALCHEMY_DATABASE_URI = 'sqlite:///employee.db'
+    SQLALCHEMY_TRACK_MODIFICATIONS = False
+
+
+from flask_sqlalchemy import SQLAlchemy
+from flask_login import UserMixin
+from flask_bcrypt import Bcrypt
+from datetime import datetime
+
+db = SQLAlchemy()
+bcrypt = Bcrypt()
+
+class User(db.Model, UserMixin):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(150), nullable=False, unique=True)
+    email = db.Column(db.String(150), nullable=False, unique=True)
+    password = db.Column(db.String(200), nullable=False)
+    role = db.Column(db.String(50), default='admin')  # Only admins can CRUD employees
+
+class Employee(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    first_name = db.Column(db.String(100), nullable=False)
+    last_name = db.Column(db.String(100), nullable=False)
+    email = db.Column(db.String(150), nullable=False, unique=True)
+    department = db.Column(db.String(100), nullable=False)
+    hire_date = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+
+
+
+from flask import Flask
+from models import db, bcrypt
+from flask_login import LoginManager
+
+app = Flask(__name__)
+app.config.from_object('config.Config')
+
+db.init_app(app)
+bcrypt.init_app(app)
+
+login_manager = LoginManager()
+login_manager.login_view = 'login'
+login_manager.init_app(app)
+
+from models import User
+
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
+
+from routes import *
+
+if __name__ == '__main__':
+    with app.app_context():
+        db.create_all()  # Create the database
+    app.run(debug=True)
+
+
+from flask import render_template, redirect, url_for, flash, request
+from models import Employee, User, db, bcrypt
+from flask_login import login_user, logout_user, current_user, login_required
+from app import app
+from forms import EmployeeForm
+
+@app.route('/dashboard')
+@login_required
+def dashboard():
+    employees = Employee.query.all()
+    return render_template('employee_list.html', employees=employees)
+
+
+@app.route('/employee/new', methods=['GET', 'POST'])
+@login_required
+def create_employee():
+    if current_user.role != 'admin':
+        flash('You do not have permission to access this page.', 'danger')
+        return redirect(url_for('dashboard'))
+
+    form = EmployeeForm()
+    if form.validate_on_submit():
+        employee = Employee(
+            first_name=form.first_name.data,
+            last_name=form.last_name.data,
+            email=form.email.data,
+            department=form.department.data
+        )
+        db.session.add(employee)
+        db.session.commit()
+        flash('Employee created successfully.', 'success')
+        return redirect(url_for('dashboard'))
+
+    return render_template('employee_form.html', form=form, title='Create Employee')
+
+
+@app.route('/employee/<int:id>/update', methods=['GET', 'POST'])
+@login_required
+def update_employee(id):
+    if current_user.role != 'admin':
+        flash('You do not have permission to access this page.', 'danger')
+        return redirect(url_for('dashboard'))
+
+    employee = Employee.query.get_or_404(id)
+    form = EmployeeForm()
+
+    if form.validate_on_submit():
+        employee.first_name = form.first_name.data
+        employee.last_name = form.last_name.data
+        employee.email = form.email.data
+        employee.department = form.department.data
+        db.session.commit()
+        flash('Employee updated successfully.', 'success')
+        return redirect(url_for('dashboard'))
+    
+    form.first_name.data = employee.first_name
+    form.last_name.data = employee.last_name
+    form.email.data = employee.email
+    form.department.data = employee.department
+
+    return render_template('employee_form.html', form=form, title='Update Employee')
+
+
+@app.route('/employee/<int:id>/delete', methods=['POST'])
+@login_required
+def delete_employee(id):
+    if current_user.role != 'admin':
+        flash('You do not have permission to perform this action.', 'danger')
+        return redirect(url_for('dashboard'))
+
+    employee = Employee.query.get_or_404(id)
+    db.session.delete(employee)
+    db.session.commit()
+    flash('Employee deleted successfully.', 'success')
+    return redirect(url_for('dashboard'))
+
+
+
+from flask_wtf import FlaskForm
+from wtforms import StringField, SubmitField
+from wtforms.validators import DataRequired, Email, Length
+
+class EmployeeForm(FlaskForm):
+    first_name = StringField('First Name', validators=[DataRequired(), Length(min=2, max=100)])
+    last_name = StringField('Last Name', validators=[DataRequired(), Length(min=2, max=100)])
+    email = StringField('Email', validators=[DataRequired(), Email()])
+    department = StringField('Department', validators=[DataRequired(), Length(min=2, max=100)])
+    submit = SubmitField('Submit')
+
+
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Employee Dashboard</title>
+</head>
+<body>
+    <h1>Employee Dashboard</h1>
+    <a href="{{ url_for('create_employee') }}">Create Employee</a>
+    <ul>
+        {% for employee in employees %}
+        <li>{{ employee.first_name }} {{ employee.last_name }} - {{ employee.email }}
+            <a href="{{ url_for('update_employee', id=employee.id) }}">Edit</a>
+            <form method="POST" action="{{ url_for('delete_employee', id=employee.id) }}">
+                <button type="submit">Delete</button>
+            </form>
+        </li>
+        {% endfor %}
+    </ul>
+</body>
+</html>
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+</head>
+<body>
+    <h1>{{ title }}</h1>
+    <form method="POST">
+        {{ form.hidden_tag() }}
+        {{ form.first_name.label }} {{ form.first_name() }}<br>
+        {{ form.last_name.label }} {{ form.last_name() }}<br>
+        {{ form.email.label }} {{ form.email() }}<br>
+        {{ form.department.label }} {{ form.department() }}<br>
+        {{ form.submit() }}
+    </form>
+</body>
+</html>
+
